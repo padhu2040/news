@@ -51,15 +51,32 @@ try:
         if "generateContent" in m.supported_generation_methods
     ]
 
-    target_model = "gemini-1.0-pro"
-    for m in available_models:
-        if "gemini-1.5-flash" in m:
-            target_model = m
+    # Priority order — pick the first available match
+    PREFERRED = [
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-1.0-pro",
+    ]
+
+    target_model = None
+    for preferred in PREFERRED:
+        for m in available_models:
+            if preferred in m:
+                target_model = m
+                break
+        if target_model:
             break
-        elif "1.5-pro" in m:
-            target_model = m
-        elif "1.0-pro" in m:
-            target_model = m
+
+    # Last resort: just use whatever is first in the list
+    if not target_model:
+        target_model = available_models[0] if available_models else None
+
+    if not target_model:
+        raise ValueError("No generateContent-capable Gemini models found.")
+
+    st.sidebar.caption(f"AI model: `{target_model}`")
 
     gemini_model = genai.GenerativeModel(
         target_model,
