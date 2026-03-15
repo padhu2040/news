@@ -113,7 +113,6 @@ def process_live_news(region):
     for source_name, data in RSS_FEEDS[region].items():
         try:
             feed = feedparser.parse(data["url"])
-            # FIX 1: Increased from 12 to 35 to cast a wider net
             for entry in feed.entries[:35]:
                 articles.append({"title": entry.title, "link": entry.link, "source": source_name, "bias": data["bias"]})
         except: 
@@ -134,8 +133,8 @@ def process_live_news(region):
         used_indices.add(i)
         for j in range(i + 1, len(articles)):
             if j not in used_indices:
-                # FIX 2: Lowered similarity threshold from 0.55 to 0.48 to be more forgiving
-                if util.cos_sim(embeddings[i], embeddings[j]).item() > 0.48:
+                # LOWERED THRESHOLD: Was 0.48, now 0.45 to catch more regional overlap
+                if util.cos_sim(embeddings[i], embeddings[j]).item() > 0.45:
                     cluster.append(articles[j])
                     used_indices.add(j)
                     
@@ -183,7 +182,7 @@ def fetch_weekly_radar(region):
     except:
         return []
 
-# --- HTML CARD RENDERER ---
+# --- HTML CARD RENDERER (FLATTENED) ---
 def render_event_card(event):
     topics_html = "".join([f"<span style='display:inline-block; background:#f3f4f6; color:#374151; padding:4px 10px; border-radius:16px; font-size:12px; margin-right:6px; font-weight:500;'>{t}</span>" for t in event.get('topics', [])])
     
@@ -192,7 +191,6 @@ def render_event_card(event):
         color = "#3b82f6" if art['bias'] == "Left" else "#eab308" if art['bias'] == "Center" else "#ef4444"
         sources_html += f"<div style='margin-bottom:8px;'><small><b><span style='color:{color}'>▪ {art['bias']}</span> | {art['source']}</b>: <a href='{art['link']}' style='color:#333; text-decoration:none;'>{art['title']}</a></small></div>"
 
-    # NOTE: Every line in this f-string is pushed all the way to the left edge!
     html_card = f"""
 <style>
 .custom-card {{ background: white; padding: 20px; border-radius: 8px; border: 1px solid #e5e7eb; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 20px; }}
@@ -230,7 +228,6 @@ def render_event_card(event):
 st.title("News Aggregator")
 st.markdown("▪ Bias tracking and AI event clustering.")
 
-# FIX 3: Replaced Emojis with Minimalist Icons
 tab_global, tab_india, tab_tn = st.tabs(["▪ Global", "▪ India", "▪ Tamil Nadu"])
 
 def build_view(region):
@@ -254,11 +251,12 @@ def build_view(region):
         all_topics.extend(ev.get('topics', []))
     unique_topics = sorted(list(set(all_topics)))
     
-    # FIX 4: Replaced Cloud Emoji with Minimalist Icon
-    selected_topics = st.multiselect("▪ Filter by Topic", unique_topics, placeholder="Select a topic to filter...", key=f"filter_{region}")
+    # NEW: Clickable Pills instead of multiselect dropdown!
+    selected_topics = st.pills("▪ Filter by Topic", unique_topics, selection_mode="multi", key=f"pills_{region}")
     st.divider()
 
     for event in events:
+        # If user has clicked any pills, only show cards matching those pills
         if selected_topics:
             event_topics = event.get('topics', [])
             if not any(topic in selected_topics for topic in event_topics):
