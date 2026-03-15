@@ -192,6 +192,7 @@ def render_event_card(event):
         color = "#3b82f6" if art['bias'] == "Left" else "#eab308" if art['bias'] == "Center" else "#ef4444"
         sources_html += f"<div style='margin-bottom:8px;'><small><b><span style='color:{color}'>▪ {art['bias']}</span> | {art['source']}</b>: <a href='{art['link']}' style='color:#333; text-decoration:none;'>{art['title']}</a></small></div>"
 
+    # NOTE: Every line in this f-string is pushed all the way to the left edge!
     html_card = f"""
 <style>
 .custom-card {{ background: white; padding: 20px; border-radius: 8px; border: 1px solid #e5e7eb; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 20px; }}
@@ -201,26 +202,26 @@ def render_event_card(event):
 </style>
 
 <div class="custom-card">
-    {topics_html}
-    <h3 style="margin-top: 12px; color: #111827;">{event['title']}</h3>
-    <p style="color: #374151; font-size: 15px; line-height: 1.5;">{event['summary']}</p>
-    
-    <div class="insight-tag">Key Fact</div>
-    <p style="margin: 4px 0 0 0; font-size: 14px; color: #4b5563;">{event['key_fact']}</p>
-    
-    <div class="insight-tag">Media Discrepancy</div>
-    <p style="margin: 4px 0 0 0; font-size: 14px; color: #4b5563;">{event['discrepancy']}</p>
-    
-    <div class="bias-bar-container">
-        <div style="width: {(event['left_count']/max(1, event['total_articles']))*100}%; background-color: #3b82f6;"></div>
-        <div style="width: {(event['center_count']/max(1, event['total_articles']))*100}%; background-color: #eab308;"></div>
-        <div style="width: {(event['right_count']/max(1, event['total_articles']))*100}%; background-color: #ef4444;"></div>
-    </div>
-    
-    <details>
-        <summary style="cursor:pointer; color:#6b7280; font-size:14px; font-weight:500;">View {event['total_articles']} Sources</summary>
-        <div class="sources-box">{sources_html}</div>
-    </details>
+{topics_html}
+<h3 style="margin-top: 12px; color: #111827;">{event['title']}</h3>
+<p style="color: #374151; font-size: 15px; line-height: 1.5;">{event['summary']}</p>
+
+<div class="insight-tag">Key Fact</div>
+<p style="margin: 4px 0 0 0; font-size: 14px; color: #4b5563;">{event['key_fact']}</p>
+
+<div class="insight-tag">Media Discrepancy</div>
+<p style="margin: 4px 0 0 0; font-size: 14px; color: #4b5563;">{event['discrepancy']}</p>
+
+<div class="bias-bar-container">
+<div style="width: {(event['left_count']/max(1, event['total_articles']))*100}%; background-color: #3b82f6;"></div>
+<div style="width: {(event['center_count']/max(1, event['total_articles']))*100}%; background-color: #eab308;"></div>
+<div style="width: {(event['right_count']/max(1, event['total_articles']))*100}%; background-color: #ef4444;"></div>
+</div>
+
+<details>
+<summary style="cursor:pointer; color:#6b7280; font-size:14px; font-weight:500;">View {event['total_articles']} Sources</summary>
+<div class="sources-box">{sources_html}</div>
+</details>
 </div>
 """
     st.markdown(html_card, unsafe_allow_html=True)
