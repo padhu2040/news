@@ -18,16 +18,37 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- INITIALIZE GEMINI ---
+# --- INITIALIZE GEMINI (DYNAMIC FALLBACK) ---
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # Using the standard flash model name with your recommended JSON config
+    
+    # 1. Ask Google what models this specific API key can use
+    available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+    
+    # 2. Set a safe default
+    target_model = 'gemini-1.0-pro' 
+    
+    # 3. Scan the available models and grab the smartest one available
+    if available_models:
+        target_model = available_models[0] # Absolute fallback
+        for m in available_models:
+            if 'gemini-1.5-flash' in m: 
+                target_model = m
+                break # Stop searching, we found the best one!
+            elif '1.5-pro' in m: 
+                target_model = m
+            elif '1.0-pro' in m:
+                target_model = m
+
+    # 4. Initialize the model using the guaranteed valid name AND the JSON config
     gemini_model = genai.GenerativeModel(
-        'gemini-1.5-flash',
+        target_model,
         generation_config={"response_mime_type": "application/json"}
     )
+    
 except Exception as e:
-    st.error("API Key not found or configuration failed.")
+    st.error(f"Failed to initialize AI model. Details: {e}")
+    gemini_model = None
 
 # --- LOAD NLP MODEL ---
 @st.cache_resource
@@ -83,12 +104,14 @@ def fetch_and_cluster():
             clusters.append(current_cluster)
     return clusters
 
-# --- YOUR BULLETPROOF AI JSON FETCHER ---
+# --- AI JSON FETCHER ---
 @st.cache_data(ttl=3600)
 def generate_structured_summary(titles):
+    if not gemini_model:
+        return {"error": "AI Model failed to initialize."}
+        
     headlines = "\n".join(titles)
     
-    # 1. Define schema safely
     json_schema = """
     {
         "summary": "A strictly factual, neutral 2-sentence summary of the event.",
@@ -99,15 +122,11 @@ def generate_structured_summary(titles):
     }
     """
     
-    # 2. Build prompt
     prompt = f"Analyze these news headlines about a single event:\n{headlines}\n\nReturn a JSON object strictly following this structure:\n"
     prompt += json_schema
     
     try:
-        # 3. Call AI
         resp = gemini_model.generate_content(prompt)
-        
-        # 4. Safely clean and parse
         raw_text = resp.text.strip()
         if raw_text.startswith("```json"): 
             raw_text = raw_text[7:-3]
@@ -138,15 +157,13 @@ else:
         right_count = sum(1 for a in cluster if a['bias'] == 'Right')
         total = len(cluster)
         
-        # Build the source links HTML safely
         sources_html = ""
         for art in cluster:
             color = "#3b82f6" if art['bias'] == "Left" else "#eab308" if art['bias'] == "Center" else "#ef4444"
             sources_html += f"<div style='margin-bottom: 8px;'><small><b><span style='color:{color}'>▪ {art['bias']}</span> | {art['source']}</b>: <a href='{art['link']}' style='color:#333; text-decoration:none;'>{art['title']}</a></small></div>"
 
-        # --- YOUR FLATTENED HTML RENDERER ---
+        # --- HTML RENDERER ---
         if "error" not in ai_data:
-            # Notice how this is completely flat against the left wall
             html_card = f"""
 <style>
 .custom-card {{ background: white; padding: 20px; border-radius: 8px; border: 1px solid #e5e7eb; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 20px; }}
