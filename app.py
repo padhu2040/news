@@ -5,8 +5,8 @@ from sentence_transformers import SentenceTransformer, util
 import google.generativeai as genai
 from supabase import create_client, Client
 
-# --- PAGE CONFIG & CSS ---
-st.set_page_config(page_title="News Aggregator", page_icon="📰", layout="centered")
+# --- PAGE CONFIG & CSS (MINIMALIST) ---
+st.set_page_config(page_title="News Aggregator", page_icon="▪", layout="centered")
 
 st.markdown("""
 <style>
@@ -61,23 +61,23 @@ nlp_model = load_model()
 # --- REGIONAL RSS SOURCES ---
 RSS_FEEDS = {
     "Global": {
-        "CNN": {"url": "[http://rss.cnn.com/rss/cnn_topstories.rss](http://rss.cnn.com/rss/cnn_topstories.rss)", "bias": "Left"},
-        "BBC": {"url": "[http://feeds.bbci.co.uk/news/world/rss.xml](http://feeds.bbci.co.uk/news/world/rss.xml)", "bias": "Center"},
-        "Fox": {"url": "[http://feeds.foxnews.com/foxnews/world](http://feeds.foxnews.com/foxnews/world)", "bias": "Right"}
+        "CNN": {"url": "http://rss.cnn.com/rss/cnn_topstories.rss", "bias": "Left"},
+        "BBC": {"url": "http://feeds.bbci.co.uk/news/world/rss.xml", "bias": "Center"},
+        "Fox": {"url": "http://feeds.foxnews.com/foxnews/world", "bias": "Right"}
     },
     "India": {
-        "The Hindu": {"url": "[https://www.thehindu.com/news/national/feeder/default.rss](https://www.thehindu.com/news/national/feeder/default.rss)", "bias": "Left"},
-        "NDTV": {"url": "[https://feeds.feedburner.com/ndtvnews-india-news](https://feeds.feedburner.com/ndtvnews-india-news)", "bias": "Center"},
-        "Times of India": {"url": "[https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms](https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms)", "bias": "Right"}
+        "The Hindu": {"url": "https://www.thehindu.com/news/national/feeder/default.rss", "bias": "Left"},
+        "NDTV": {"url": "https://feeds.feedburner.com/ndtvnews-india-news", "bias": "Center"},
+        "Times of India": {"url": "https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms", "bias": "Right"}
     },
     "Tamil Nadu": {
-        "The Hindu TN": {"url": "[https://www.thehindu.com/news/states/tamil-nadu/feeder/default.rss](https://www.thehindu.com/news/states/tamil-nadu/feeder/default.rss)", "bias": "Left"},
-        "Indian Express TN": {"url": "[https://indianexpress.com/section/cities/chennai/feed/](https://indianexpress.com/section/cities/chennai/feed/)", "bias": "Center"},
-        "TOI Chennai": {"url": "[https://timesofindia.indiatimes.com/rssfeeds/2950623.cms](https://timesofindia.indiatimes.com/rssfeeds/2950623.cms)", "bias": "Right"}
+        "The Hindu TN": {"url": "https://www.thehindu.com/news/states/tamil-nadu/feeder/default.rss", "bias": "Left"},
+        "Indian Express TN": {"url": "https://indianexpress.com/section/cities/chennai/feed/", "bias": "Center"},
+        "TOI Chennai": {"url": "https://timesofindia.indiatimes.com/rssfeeds/2950623.cms", "bias": "Right"}
     }
 }
 
-# --- AI JSON FETCHER (TOPIC CLOUD READY) ---
+# --- AI JSON FETCHER ---
 def generate_ai_metadata(titles):
     if not gemini_model: 
         return {"error": "AI Offline"}
@@ -97,7 +97,6 @@ def generate_ai_metadata(titles):
         resp = gemini_model.generate_content(prompt)
         raw = resp.text.strip()
         
-        # FIX: Using single quotes to prevent markdown parser crashes during copy-paste
         if raw.startswith('```json'): 
             raw = raw[7:-3]
         elif raw.startswith('```'): 
@@ -107,14 +106,15 @@ def generate_ai_metadata(titles):
     except Exception as e:
         return {"error": str(e)}
 
-# --- FETCH, CLUSTER & SAVE (TODAY'S NEWS) ---
+# --- FETCH, CLUSTER & SAVE ---
 @st.cache_data(ttl=3600)
 def process_live_news(region):
     articles = []
     for source_name, data in RSS_FEEDS[region].items():
         try:
             feed = feedparser.parse(data["url"])
-            for entry in feed.entries[:12]:
+            # FIX 1: Increased from 12 to 35 to cast a wider net
+            for entry in feed.entries[:35]:
                 articles.append({"title": entry.title, "link": entry.link, "source": source_name, "bias": data["bias"]})
         except: 
             continue
@@ -134,12 +134,12 @@ def process_live_news(region):
         used_indices.add(i)
         for j in range(i + 1, len(articles)):
             if j not in used_indices:
-                if util.cos_sim(embeddings[i], embeddings[j]).item() > 0.55:
+                # FIX 2: Lowered similarity threshold from 0.55 to 0.48 to be more forgiving
+                if util.cos_sim(embeddings[i], embeddings[j]).item() > 0.48:
                     cluster.append(articles[j])
                     used_indices.add(j)
                     
         if len(cluster) > 1:
-            # Analyze with Gemini
             ai_data = generate_ai_metadata([art['title'] for art in cluster])
             if "error" in ai_data: continue
                 
@@ -162,18 +162,17 @@ def process_live_news(region):
             
             processed_events.append(event_record)
             
-            # Save to Supabase (Deduplication Check)
             if supabase:
                 try:
                     existing = supabase.table("news_events").select("id").eq("title", event_title).execute()
                     if not existing.data:
                         supabase.table("news_events").insert(event_record).execute()
                 except Exception as e:
-                    print(f"Supabase error: {e}")
+                    pass
                     
     return processed_events
 
-# --- FETCH WEEKLY RADAR (FROM DB) ---
+# --- FETCH WEEKLY RADAR ---
 @st.cache_data(ttl=600)
 def fetch_weekly_radar(region):
     if not supabase: 
@@ -228,9 +227,10 @@ def render_event_card(event):
 
 # --- UI APP LAYOUT ---
 st.title("News Aggregator")
-st.markdown("▪️ Bias tracking and AI event clustering.")
+st.markdown("▪ Bias tracking and AI event clustering.")
 
-tab_global, tab_india, tab_tn = st.tabs(["🌍 Global", "🇮🇳 India", "🐅 Tamil Nadu"])
+# FIX 3: Replaced Emojis with Minimalist Icons
+tab_global, tab_india, tab_tn = st.tabs(["▪ Global", "▪ India", "▪ Tamil Nadu"])
 
 def build_view(region):
     view_mode = st.radio("Timeframe", ["Top News Today (Live)", "Weekly Radar (Database)"], horizontal=True, label_visibility="collapsed", key=f"radio_{region}")
@@ -245,7 +245,7 @@ def build_view(region):
         if "Live" in view_mode:
             st.info("Not enough overlapping coverage on live feeds right now.")
         else:
-            st.info("No saved stories found in the database. Ensure Supabase is configured and data has been scraped.")
+            st.info("No saved stories found in the database.")
         return
 
     all_topics = []
@@ -253,7 +253,8 @@ def build_view(region):
         all_topics.extend(ev.get('topics', []))
     unique_topics = sorted(list(set(all_topics)))
     
-    selected_topics = st.multiselect("☁️ Filter by Topic", unique_topics, placeholder="Select a topic to filter...", key=f"filter_{region}")
+    # FIX 4: Replaced Cloud Emoji with Minimalist Icon
+    selected_topics = st.multiselect("▪ Filter by Topic", unique_topics, placeholder="Select a topic to filter...", key=f"filter_{region}")
     st.divider()
 
     for event in events:
