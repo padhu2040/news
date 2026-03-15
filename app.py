@@ -27,7 +27,7 @@ st.markdown("""
 # Make sure your API key is correctly set in Streamlit Cloud Secrets!
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+    gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
 except Exception as e:
     st.error("API Key not found. If running locally or in Codespaces, ensure your secrets are configured.")
 
