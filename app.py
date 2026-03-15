@@ -58,19 +58,19 @@ nlp_model = load_model()
 # --- REGIONAL RSS SOURCES ---
 RSS_FEEDS = {
     "Global": {
-        "CNN": {"url": "[http://rss.cnn.com/rss/cnn_topstories.rss](http://rss.cnn.com/rss/cnn_topstories.rss)", "bias": "Left"},
-        "BBC": {"url": "[http://feeds.bbci.co.uk/news/world/rss.xml](http://feeds.bbci.co.uk/news/world/rss.xml)", "bias": "Center"},
-        "Fox": {"url": "[http://feeds.foxnews.com/foxnews/world](http://feeds.foxnews.com/foxnews/world)", "bias": "Right"}
+        "CNN": {"url": "http://rss.cnn.com/rss/cnn_topstories.rss", "bias": "Left"},
+        "BBC": {"url": "http://feeds.bbci.co.uk/news/world/rss.xml", "bias": "Center"},
+        "Fox": {"url": "http://feeds.foxnews.com/foxnews/world", "bias": "Right"}
     },
     "India": {
-        "The Hindu": {"url": "[https://www.thehindu.com/news/national/feeder/default.rss](https://www.thehindu.com/news/national/feeder/default.rss)", "bias": "Left"},
-        "NDTV": {"url": "[https://feeds.feedburner.com/ndtvnews-india-news](https://feeds.feedburner.com/ndtvnews-india-news)", "bias": "Center"},
-        "Times of India": {"url": "[https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms](https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms)", "bias": "Right"}
+        "The Hindu": {"url": "https://news.google.com/rss/search?q=site:thehindu.com+when:1d&hl=en-IN&gl=IN&ceid=IN:en", "bias": "Left"},
+        "NDTV": {"url": "https://feeds.feedburner.com/ndtvnews-india-news", "bias": "Center"},
+        "Times of India": {"url": "https://news.google.com/rss/search?q=site:timesofindia.indiatimes.com+india+when:1d&hl=en-IN&gl=IN&ceid=IN:en", "bias": "Right"}
     },
     "Tamil Nadu": {
-        "The Hindu TN": {"url": "[https://www.thehindu.com/news/states/tamil-nadu/feeder/default.rss](https://www.thehindu.com/news/states/tamil-nadu/feeder/default.rss)", "bias": "Left"},
-        "Indian Express TN": {"url": "[https://indianexpress.com/section/cities/chennai/feed/](https://indianexpress.com/section/cities/chennai/feed/)", "bias": "Center"},
-        "TOI Chennai": {"url": "[https://timesofindia.indiatimes.com/rssfeeds/2950623.cms](https://timesofindia.indiatimes.com/rssfeeds/2950623.cms)", "bias": "Right"}
+        "The Hindu TN": {"url": "https://news.google.com/rss/search?q=site:thehindu.com+tamil+nadu+when:1d&hl=en-IN&gl=IN&ceid=IN:en", "bias": "Left"},
+        "Indian Express TN": {"url": "https://news.google.com/rss/search?q=site:indianexpress.com+chennai+when:1d&hl=en-IN&gl=IN&ceid=IN:en", "bias": "Center"},
+        "TOI Chennai": {"url": "https://news.google.com/rss/search?q=site:timesofindia.indiatimes.com+chennai+when:1d&hl=en-IN&gl=IN&ceid=IN:en", "bias": "Right"}
     }
 }
 
@@ -93,7 +93,7 @@ def generate_ai_metadata(titles):
         resp = gemini_model.generate_content(prompt)
         raw = resp.text.strip()
         
-        # BULLETPROOF COPY-PASTE FIX: No hardcoded backticks in the string
+        # Safe string parsing
         marker = chr(96) * 3 
         if raw.startswith(marker + "json"): 
             raw = raw[7:-3]
@@ -108,6 +108,9 @@ def generate_ai_metadata(titles):
 @st.cache_data(ttl=3600)
 def process_live_news(region):
     articles = []
+    # Disguise the scraper to avoid being blocked
+    feedparser.USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    
     for source_name, data in RSS_FEEDS[region].items():
         try:
             feed = feedparser.parse(data["url"])
@@ -137,9 +140,7 @@ def process_live_news(region):
         if len(current_cluster) >= 1:
             clusters.append(current_cluster)
             
-    # Sort to get the biggest stories first
     clusters.sort(key=len, reverse=True)
-    
     processed_events = []
     
     for cluster in clusters[:12]:
@@ -167,7 +168,7 @@ def process_live_news(region):
         
         processed_events.append(event_record)
         
-        # Syncing to Supabase
+        # Syncing to Supabase for the Weekly Radar
         if supabase:
             try:
                 existing = supabase.table("news_events").select("id").eq("title", event_title).execute()
@@ -198,6 +199,19 @@ def render_event_card(event):
         color = "#3b82f6" if art['bias'] == "Left" else "#eab308" if art['bias'] == "Center" else "#ef4444"
         sources_html += f"<div style='margin-bottom:8px;'><small><b><span style='color:{color}'>▪ {art['bias']}</span> | {art['source']}</b>: <a href='{art['link']}' style='color:#333; text-decoration:none;'>{art['title']}</a></small></div>"
 
+    # DYNAMIC BIAS UI: Single source vs Multiple sources
+    if event['total_articles'] > 1:
+        bias_ui = f"""
+        <div class="bias-bar-container">
+            <div style="width: {(event['left_count']/event['total_articles'])*100}%; background-color: #3b82f6;"></div>
+            <div style="width: {(event['center_count']/event['total_articles'])*100}%; background-color: #eab308;"></div>
+            <div style="width: {(event['right_count']/event['total_articles'])*100}%; background-color: #ef4444;"></div>
+        </div>
+        """
+    else:
+        bias_color = "#3b82f6" if event['sources_json'][0]['bias'] == "Left" else "#eab308" if event['sources_json'][0]['bias'] == "Center" else "#ef4444"
+        bias_ui = f"<p style='font-size: 13px; color: {bias_color}; font-weight: bold; margin-top: 16px; margin-bottom: 16px;'>▪ Single Source Narrative ({event['sources_json'][0]['bias']} Leaning)</p>"
+
     html_card = f"""
 <style>
 .custom-card {{ background: white; padding: 20px; border-radius: 8px; border: 1px solid #e5e7eb; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 20px; }}
@@ -217,11 +231,7 @@ def render_event_card(event):
 <div class="insight-tag">Media Discrepancy</div>
 <p style="margin: 4px 0 0 0; font-size: 14px; color: #4b5563;">{event['discrepancy']}</p>
 
-<div class="bias-bar-container">
-<div style="width: {(event['left_count']/max(1, event['total_articles']))*100}%; background-color: #3b82f6;"></div>
-<div style="width: {(event['center_count']/max(1, event['total_articles']))*100}%; background-color: #eab308;"></div>
-<div style="width: {(event['right_count']/max(1, event['total_articles']))*100}%; background-color: #ef4444;"></div>
-</div>
+{bias_ui}
 
 <details>
 <summary style="cursor:pointer; color:#6b7280; font-size:14px; font-weight:500;">View {event['total_articles']} Source(s)</summary>
