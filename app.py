@@ -1,12 +1,12 @@
 import streamlit as st
 import feedparser
+import json
 from sentence_transformers import SentenceTransformer, util
 import google.generativeai as genai
 
-# --- PAGE CONFIG (Mobile First) ---
+# --- PAGE CONFIG ---
 st.set_page_config(page_title="News Aggregator", page_icon="📰", layout="centered")
 
-# --- MINIMALIST CSS ---
 st.markdown("""
 <style>
     #MainMenu {visibility: hidden;}
@@ -15,21 +15,19 @@ st.markdown("""
     html, body, [class*="css"]  {
         font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
     }
-    /* Style tweaks for the new cards */
-    div[data-testid="stExpander"] div[role="button"] p {
-        font-size: 0.9rem;
-        color: #555;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 # --- INITIALIZE GEMINI ---
-# Make sure your API key is correctly set in Streamlit Cloud Secrets!
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    # Using the standard flash model name with your recommended JSON config
+    gemini_model = genai.GenerativeModel(
+        'gemini-1.5-flash',
+        generation_config={"response_mime_type": "application/json"}
+    )
 except Exception as e:
-    st.error("API Key not found. If running locally or in Codespaces, ensure your secrets are configured.")
+    st.error("API Key not found or configuration failed.")
 
 # --- LOAD NLP MODEL ---
 @st.cache_resource
@@ -44,25 +42,14 @@ RSS_FEEDS = {
         "CNN": {"url": "http://rss.cnn.com/rss/cnn_topstories.rss", "bias": "Left"},
         "BBC": {"url": "http://feeds.bbci.co.uk/news/world/rss.xml", "bias": "Center"},
         "Fox": {"url": "http://feeds.foxnews.com/foxnews/world", "bias": "Right"}
-    },
-    "India": {
-        "The Hindu": {"url": "https://www.thehindu.com/news/national/feeder/default.rss", "bias": "Left"},
-        "NDTV": {"url": "https://feeds.feedburner.com/ndtvnews-india-news", "bias": "Center"},
-        "Times of India": {"url": "https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms", "bias": "Right"}
-    },
-    "Tamil Nadu": {
-        "The Hindu TN": {"url": "https://www.thehindu.com/news/states/tamil-nadu/feeder/default.rss", "bias": "Left"},
-        "Indian Express TN": {"url": "https://indianexpress.com/section/cities/chennai/feed/", "bias": "Center"},
-        "TOI Chennai": {"url": "https://timesofindia.indiatimes.com/rssfeeds/2950623.cms", "bias": "Right"}
     }
 }
 
-# --- FETCH DATA ---
+# --- FETCH & CLUSTER DATA ---
 @st.cache_data(ttl=1800)
-def fetch_news(region):
+def fetch_and_cluster():
     articles = []
-    feeds = RSS_FEEDS[region]
-    for source_name, data in feeds.items():
+    for source_name, data in RSS_FEEDS["Global"].items():
         try:
             feed = feedparser.parse(data["url"])
             for entry in feed.entries[:12]:
@@ -74,90 +61,124 @@ def fetch_news(region):
                 })
         except Exception:
             continue
-    return articles
-
-# --- CLUSTERING LOGIC ---
-@st.cache_data(ttl=1800)
-def cluster_articles(articles):
+            
     if not articles: return []
+    
     titles = [art['title'] for art in articles]
     embeddings = model.encode(titles)
     
     clusters = []
     used_indices = set()
-    
     for i in range(len(articles)):
         if i in used_indices: continue
         current_cluster = [articles[i]]
         used_indices.add(i)
-        
         for j in range(i + 1, len(articles)):
             if j not in used_indices:
                 cosine_score = util.cos_sim(embeddings[i], embeddings[j]).item()
                 if cosine_score > 0.55:
                     current_cluster.append(articles[j])
                     used_indices.add(j)
-                    
         if len(current_cluster) > 1:
             clusters.append(current_cluster)
     return clusters
 
-# --- AI SUMMARIZATION (UPDATED FOR DEBUGGING) ---
+# --- YOUR BULLETPROOF AI JSON FETCHER ---
 @st.cache_data(ttl=3600)
-def generate_summary(titles):
+def generate_structured_summary(titles):
     headlines = "\n".join(titles)
-    prompt = f"Read these headlines about a single event:\n{headlines}\nWrite a strictly flat, neutral, 2-sentence summary of the event. Do not use sensationalism."
+    
+    # 1. Define schema safely
+    json_schema = """
+    {
+        "summary": "A strictly factual, neutral 2-sentence summary of the event.",
+        "insights": {
+            "key_fact": "One verified fact present across the headlines.",
+            "discrepancy": "Any difference in how the headlines frame the event (or write 'Coverage is consistent' if none)."
+        }
+    }
+    """
+    
+    # 2. Build prompt
+    prompt = f"Analyze these news headlines about a single event:\n{headlines}\n\nReturn a JSON object strictly following this structure:\n"
+    prompt += json_schema
+    
     try:
-        response = gemini_model.generate_content(prompt)
-        return response.text
+        # 3. Call AI
+        resp = gemini_model.generate_content(prompt)
+        
+        # 4. Safely clean and parse
+        raw_text = resp.text.strip()
+        if raw_text.startswith("```json"): 
+            raw_text = raw_text[7:-3]
+        elif raw_text.startswith("```"): 
+            raw_text = raw_text[3:-3]
+            
+        return json.loads(raw_text)
     except Exception as e:
-        # Now it will print the actual reason it failed to the screen!
-        return f"⚠️ **AI Error:** {str(e)}"
+        return {"error": str(e)}
 
 # --- UI APP LAYOUT ---
 st.title("News Aggregator")
 st.markdown("▪️ Bias tracking and AI event clustering.")
 
-tab1, tab2, tab3 = st.tabs(["Global", "India", "Tamil Nadu"])
+with st.spinner("Analyzing feeds..."):
+    clusters = fetch_and_cluster()
 
-def render_feed(region):
-    with st.spinner("Analyzing feeds..."):
-        articles = fetch_news(region)
-        clusters = cluster_articles(articles)
-        
-    if not clusters:
-        st.write("Not enough overlapping coverage at the moment.")
-        return
-
+if not clusters:
+    st.write("Not enough overlapping coverage at the moment.")
+else:
     for cluster in clusters:
-        # --- THE NEW CARD DESIGN ---
-        with st.container(border=True):
-            st.markdown(f"#### {cluster[0]['title']}")
-            
-            # AI Summary
-            titles_only = [art['title'] for art in cluster]
-            summary = generate_summary(titles_only)
-            st.caption(f"{summary}")
-            
-            # Calculate Bias
-            left_count = sum(1 for a in cluster if a['bias'] == 'Left')
-            center_count = sum(1 for a in cluster if a['bias'] == 'Center')
-            right_count = sum(1 for a in cluster if a['bias'] == 'Right')
-            total = len(cluster)
-            
-            # Bias Bar Snapshot
-            st.markdown(f"<div style='display:flex; height: 6px; width: 100%; border-radius: 3px; overflow: hidden; margin-bottom: 4px; margin-top: 12px;'>"
-                        f"<div style='width: {(left_count/total)*100}%; background-color: #3b82f6;'></div>"
-                        f"<div style='width: {(center_count/total)*100}%; background-color: #eab308;'></div>"
-                        f"<div style='width: {(right_count/total)*100}%; background-color: #ef4444;'></div>"
-                        f"</div>", unsafe_allow_html=True)
-            
-            # Hidden Sources Expander to keep the card clean
-            with st.expander(f"View {total} Sources ({left_count} Left, {center_count} Center, {right_count} Right)"):
-                for art in cluster:
-                    color = "#3b82f6" if art['bias'] == "Left" else "#eab308" if art['bias'] == "Center" else "#ef4444"
-                    st.markdown(f"<small><b><span style='color:{color}'>▪ {art['bias']}</span> | {art['source']}</b>: <a href='{art['link']}' style='color:#333; text-decoration:none;'>{art['title']}</a></small>", unsafe_allow_html=True)
+        titles_only = [art['title'] for art in cluster]
+        ai_data = generate_structured_summary(titles_only)
+        
+        # Calculate Bias
+        left_count = sum(1 for a in cluster if a['bias'] == 'Left')
+        center_count = sum(1 for a in cluster if a['bias'] == 'Center')
+        right_count = sum(1 for a in cluster if a['bias'] == 'Right')
+        total = len(cluster)
+        
+        # Build the source links HTML safely
+        sources_html = ""
+        for art in cluster:
+            color = "#3b82f6" if art['bias'] == "Left" else "#eab308" if art['bias'] == "Center" else "#ef4444"
+            sources_html += f"<div style='margin-bottom: 8px;'><small><b><span style='color:{color}'>▪ {art['bias']}</span> | {art['source']}</b>: <a href='{art['link']}' style='color:#333; text-decoration:none;'>{art['title']}</a></small></div>"
 
-with tab1: render_feed("Global")
-with tab2: render_feed("India")
-with tab3: render_feed("Tamil Nadu")
+        # --- YOUR FLATTENED HTML RENDERER ---
+        if "error" not in ai_data:
+            # Notice how this is completely flat against the left wall
+            html_card = f"""
+<style>
+.custom-card {{ background: white; padding: 20px; border-radius: 8px; border: 1px solid #e5e7eb; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 20px; }}
+.insight-tag {{ color: #4b5563; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 12px; }}
+.bias-bar-container {{ display: flex; height: 6px; width: 100%; border-radius: 3px; overflow: hidden; margin-top: 16px; margin-bottom: 16px; }}
+.sources-box {{ background: #f9fafb; padding: 12px; border-radius: 6px; margin-top: 16px; border: 1px solid #f3f4f6; }}
+</style>
+
+<div class="custom-card">
+<h3 style="margin-top: 0; color: #111827;">{cluster[0]['title']}</h3>
+<p style="color: #374151; font-size: 15px; line-height: 1.5;">{ai_data['summary']}</p>
+
+<div class="insight-tag">Key Fact</div>
+<p style="margin: 4px 0 0 0; font-size: 14px; color: #4b5563;">{ai_data['insights']['key_fact']}</p>
+
+<div class="insight-tag">Media Discrepancy</div>
+<p style="margin: 4px 0 0 0; font-size: 14px; color: #4b5563;">{ai_data['insights']['discrepancy']}</p>
+
+<div class="bias-bar-container">
+    <div style="width: {(left_count/total)*100}%; background-color: #3b82f6;"></div>
+    <div style="width: {(center_count/total)*100}%; background-color: #eab308;"></div>
+    <div style="width: {(right_count/total)*100}%; background-color: #ef4444;"></div>
+</div>
+
+<details>
+    <summary style="cursor: pointer; color: #6b7280; font-size: 14px; font-weight: 500;">View {total} Sources ({left_count} Left, {center_count} Center, {right_count} Right)</summary>
+    <div class="sources-box">
+        {sources_html}
+    </div>
+</details>
+</div>
+"""
+            st.markdown(html_card, unsafe_allow_html=True)
+        else:
+            st.error(f"AI Error for this cluster: {ai_data['error']}")
