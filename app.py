@@ -1,111 +1,163 @@
 import streamlit as st
 import feedparser
 from sentence_transformers import SentenceTransformer, util
+import google.generativeai as genai
 
-# Set up the page
-st.set_page_config(page_title="News Aggregator", page_icon="📰", layout="wide")
+# --- PAGE CONFIG (Mobile First) ---
+st.set_page_config(page_title="News Aggregator", page_icon="◾", layout="centered")
 
-st.title("📰 Open News Aggregator")
-st.markdown("Tracking bias and clustering global events using AI.")
+# --- MINIMALIST CSS ---
+st.markdown("""
+<style>
+    /* Hide Streamlit clutter */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Minimalist Typography */
+    html, body, [class*="css"]  {
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    }
+    
+    /* Flat UI elements */
+    stDivider {
+        border-bottom-color: #EEEEEE !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# --- LOAD AI MODEL ---
-# @st.cache_resource ensures the ML model only downloads once when the server starts
+# --- INITIALIZE GEMINI ---
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+
+# --- LOAD NLP MODEL ---
 @st.cache_resource
 def load_model():
-    # This downloads a small, fast NLP model from Hugging Face
+    # all-MiniLM-L6-v2 works best with English text.
     return SentenceTransformer('all-MiniLM-L6-v2')
 
 model = load_model()
 
-# --- REAL DATA FETCHING ---
-@st.cache_data(ttl=3600)
-def fetch_news():
-    rss_feeds = {
-        "Left": "http://rss.cnn.com/rss/cnn_topstories.rss",
-        "Center": "http://feeds.bbci.co.uk/news/world/rss.xml",
-        "Right": "http://feeds.foxnews.com/foxnews/world"
+# --- SOURCES DICTIONARY ---
+# We use English-language feeds for Indian/TN news to ensure the NLP clustering works flawlessly.
+RSS_FEEDS = {
+    "Global": {
+        "CNN": {"url": "http://rss.cnn.com/rss/cnn_topstories.rss", "bias": "Left"},
+        "BBC": {"url": "http://feeds.bbci.co.uk/news/world/rss.xml", "bias": "Center"},
+        "Fox": {"url": "http://feeds.foxnews.com/foxnews/world", "bias": "Right"}
+    },
+    "India": {
+        "The Hindu": {"url": "https://www.thehindu.com/news/national/feeder/default.rss", "bias": "Left"},
+        "NDTV": {"url": "https://feeds.feedburner.com/ndtvnews-india-news", "bias": "Center"},
+        "Times of India": {"url": "https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms", "bias": "Right"}
+    },
+    "Tamil Nadu": {
+        "The Hindu TN": {"url": "https://www.thehindu.com/news/states/tamil-nadu/feeder/default.rss", "bias": "Left"},
+        "Indian Express TN": {"url": "https://indianexpress.com/section/cities/chennai/feed/", "bias": "Center"},
+        "TOI Chennai": {"url": "https://timesofindia.indiatimes.com/rssfeeds/2950623.cms", "bias": "Right"}
     }
-    
+}
+
+# --- FETCH DATA ---
+@st.cache_data(ttl=1800)
+def fetch_news(region):
     articles = []
-    for bias, url in rss_feeds.items():
-        feed = feedparser.parse(url)
-        # We grab 15 articles from each source to increase the chance of overlap
-        for entry in feed.entries[:15]: 
-            articles.append({
-                "title": entry.title,
-                "link": entry.link,
-                "bias": bias
-            })
+    feeds = RSS_FEEDS[region]
+    for source_name, data in feeds.items():
+        try:
+            feed = feedparser.parse(data["url"])
+            for entry in feed.entries[:12]:
+                articles.append({
+                    "title": entry.title,
+                    "link": entry.link,
+                    "source": source_name,
+                    "bias": data["bias"]
+                })
+        except Exception:
+            continue
     return articles
 
-# --- AI CLUSTERING LOGIC ---
-@st.cache_data(ttl=3600)
+# --- CLUSTERING LOGIC ---
+@st.cache_data(ttl=1800)
 def cluster_articles(articles):
-    if not articles:
-        return []
-        
+    if not articles: return []
     titles = [art['title'] for art in articles]
-    # Convert text titles into mathematical embeddings
-    embeddings = model.encode(titles) 
+    embeddings = model.encode(titles)
     
     clusters = []
     used_indices = set()
     
     for i in range(len(articles)):
-        if i in used_indices:
-            continue
-            
-        # Start a new cluster with the current article
+        if i in used_indices: continue
         current_cluster = [articles[i]]
         used_indices.add(i)
         
-        # Compare this article with all remaining articles
         for j in range(i + 1, len(articles)):
             if j not in used_indices:
-                # Calculate how similar the two headlines are (0.0 to 1.0)
                 cosine_score = util.cos_sim(embeddings[i], embeddings[j]).item()
-                
-                # If they are more than 55% similar, group them together
-                if cosine_score > 0.55: 
+                if cosine_score > 0.55:
                     current_cluster.append(articles[j])
                     used_indices.add(j)
                     
-        # Only save the cluster if at least 2 different articles are covering it
         if len(current_cluster) > 1:
             clusters.append(current_cluster)
-            
     return clusters
 
-# --- EXECUTION ---
-with st.spinner("Fetching news and running AI clustering... this takes a few seconds."):
-    live_articles = fetch_news()
-    clustered_events = cluster_articles(live_articles)
+# --- AI SUMMARIZATION ---
+@st.cache_data(ttl=3600)
+def generate_summary(titles):
+    headlines = "\n".join(titles)
+    prompt = f"Read these headlines about a single event:\n{headlines}\nWrite a strictly flat, neutral, 2-sentence summary of the event. Do not use sensationalism."
+    try:
+        response = gemini_model.generate_content(prompt)
+        return response.text
+    except Exception:
+        return "Summary unavailable."
 
-# --- UI DISPLAY ---
-st.header("Clustered News Events")
-st.write("Our NLP model has grouped these articles together because they are reporting on the exact same story.")
+# --- UI APP LAYOUT ---
+st.title("News Aggregator")
+st.markdown("▪️ Bias tracking and AI event clustering.")
 
-if not clustered_events:
-    st.info("Not enough overlapping stories found between the networks right now. Try again later!")
+# Mobile-first: Tabs for navigation
+tab1, tab2, tab3 = st.tabs(["Global", "India", "Tamil Nadu"])
 
-# Loop through our AI-generated groups
-for index, cluster in enumerate(clustered_events):
-    st.divider()
-    
-    # We use the title of the first article as the overarching "Event Title"
-    st.subheader(f"Event: {cluster[0]['title']}")
-    
-    # Create the bias columns
-    left_col, center_col, right_col = st.columns(3)
-    
-    # Sort the articles in this specific cluster into their bias buckets
-    for art in cluster:
-        if art["bias"] == "Left":
-            with left_col:
-                st.info(f"**Left Leaning**\n\n[{art['title']}]({art['link']})")
-        elif art["bias"] == "Center":
-            with center_col:
-                st.warning(f"**Center**\n\n[{art['title']}]({art['link']})")
-        elif art["bias"] == "Right":
-            with right_col:
-                st.error(f"**Right Leaning**\n\n[{art['title']}]({art['link']})")
+def render_feed(region):
+    with st.spinner("Analyzing feeds..."):
+        articles = fetch_news(region)
+        clusters = cluster_articles(articles)
+        
+    if not clusters:
+        st.write("Not enough overlapping coverage at the moment.")
+        return
+
+    for cluster in clusters:
+        st.markdown(f"### {cluster[0]['title']}")
+        
+        # AI Summary
+        titles_only = [art['title'] for art in cluster]
+        summary = generate_summary(titles_only)
+        st.caption(f"**AI Summary:** {summary}")
+        
+        # Calculate Bias
+        left_count = sum(1 for a in cluster if a['bias'] == 'Left')
+        center_count = sum(1 for a in cluster if a['bias'] == 'Center')
+        right_count = sum(1 for a in cluster if a['bias'] == 'Right')
+        total = len(cluster)
+        
+        # Flat UI Bias Bar
+        st.markdown(f"<div style='display:flex; height: 6px; width: 100%; border-radius: 3px; overflow: hidden; margin-bottom: 12px; margin-top: 8px;'>"
+                    f"<div style='width: {(left_count/total)*100}%; background-color: #3b82f6;'></div>"
+                    f"<div style='width: {(center_count/total)*100}%; background-color: #eab308;'></div>"
+                    f"<div style='width: {(right_count/total)*100}%; background-color: #ef4444;'></div>"
+                    f"</div>", unsafe_allow_html=True)
+        
+        # Flat list of sources (Stacks cleanly on mobile)
+        for art in cluster:
+            color = "#3b82f6" if art['bias'] == "Left" else "#eab308" if art['bias'] == "Center" else "#ef4444"
+            st.markdown(f"<small><b><span style='color:{color}'>▪ {art['bias']}</span> | {art['source']}</b>: <a href='{art['link']}' style='color:inherit; text-decoration:none;'>{art['title']}</a></small>", unsafe_allow_html=True)
+            
+        st.divider()
+
+with tab1: render_feed("Global")
+with tab2: render_feed("India")
+with tab3: render_feed("Tamil Nadu")
