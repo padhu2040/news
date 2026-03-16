@@ -4,3 +4,4 @@ feedparser
 sentence-transformers
 google-generativeai>=0.5.2
 supabase>=2.3.0
+tenacity
