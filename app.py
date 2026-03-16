@@ -1,233 +1,72 @@
-import re
-import json
-import time
-import streamlit as st
-import feedparser
-from sentence_transformers import SentenceTransformer, util
-import google.generativeai as genai
-from supabase import create_client, Client
-from datetime import datetime, timedelta
-
-# ---------------------------------------------------------------------------
-# PAGE CONFIG & GLOBAL CSS
-# ---------------------------------------------------------------------------
-st.set_page_config(page_title="News Aggregator", page_icon="▪", layout="centered")
-
-st.markdown("""
-<style>
-    #MainMenu {visibility: hidden;}
-    footer    {visibility: hidden;}
-    header    {visibility: hidden;}
-    html, body, [class*="css"] {
-        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# ---------------------------------------------------------------------------
-# SUPABASE INIT
-# ---------------------------------------------------------------------------
-try:
-    if "SUPABASE_URL" in st.secrets and "SUPABASE_KEY" in st.secrets:
-        supabase: Client = create_client(
-            st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"]
-        )
-    else:
-        supabase = None
-except Exception:
-    st.warning("Supabase not connected. Weekly Radar will be disabled.")
-    supabase = None
-
-# ---------------------------------------------------------------------------
-# GEMINI INIT
-# Builds a ranked fallback list so if one model hits its quota the next
-# one is tried automatically.  Free-tier quotas differ per model family,
-# so keeping all valid models lets us route around exhausted buckets.
-# ---------------------------------------------------------------------------
-GEMINI_FALLBACKS: list[str] = []
-
-try:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-
-    available_models = [
-        m.name
-        for m in genai.list_models()
-        if "generateContent" in m.supported_generation_methods
-    ]
-
-    # Keywords in descending preference — flash-lite has the largest free quota
-    PREFERRED_KEYWORDS = [
-        "gemini-2.0-flash-lite",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-1.0-pro",
-    ]
-
-    seen: set[str] = set()
-    for keyword in PREFERRED_KEYWORDS:
-        for m in available_models:
-            if keyword in m and m not in seen:
-                GEMINI_FALLBACKS.append(m)
-                seen.add(m)
-
-    # Append anything else not already matched
-    for m in available_models:
-        if m not in seen:
-            GEMINI_FALLBACKS.append(m)
-            seen.add(m)
-
-    if not GEMINI_FALLBACKS:
-        raise ValueError("No generateContent-capable Gemini models found.")
-
-    st.sidebar.caption(
-        f"AI primary: `{GEMINI_FALLBACKS[0]}` "
-        f"| {len(GEMINI_FALLBACKS)} model(s) available"
-    )
-
-except Exception as e:
-    st.error(f"Failed to initialise Gemini: {e}")
-
-
-def _get_gemini_model(model_name: str):
-    return genai.GenerativeModel(
-        model_name,
-        generation_config={"response_mime_type": "application/json"},
-    )
-
-
-# ---------------------------------------------------------------------------
-# NLP MODEL
-# ---------------------------------------------------------------------------
-@st.cache_resource
-def load_nlp_model():
-    return SentenceTransformer("all-MiniLM-L6-v2")
-
-nlp_model = load_nlp_model()
-
-# ---------------------------------------------------------------------------
-# RSS FEED SOURCES
-# ---------------------------------------------------------------------------
-RSS_FEEDS = {
-    "Global": {
-        "CNN": {
-            "url": "http://rss.cnn.com/rss/cnn_topstories.rss",
-            "bias": "Left",
-        },
-        "BBC": {
-            "url": "http://feeds.bbci.co.uk/news/world/rss.xml",
-            "bias": "Center",
-        },
-        "Fox": {
-            "url": "http://feeds.foxnews.com/foxnews/world",
-            "bias": "Right",
-        },
-    },
-    "India": {
-        "The Hindu": {
-            "url": "https://news.google.com/rss/search?q=site:thehindu.com+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-            "bias": "Left",
-        },
-        "NDTV": {
-            "url": "https://feeds.feedburner.com/ndtvnews-india-news",
-            "bias": "Center",
-        },
-        "Times of India": {
-            "url": "https://news.google.com/rss/search?q=site:timesofindia.indiatimes.com+india+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-            "bias": "Right",
-        },
-    },
-    "Tamil Nadu": {
-        "The Hindu TN": {
-            "url": "https://news.google.com/rss/search?q=site:thehindu.com+tamil+nadu+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-            "bias": "Left",
-        },
-        "Indian Express TN": {
-            "url": "https://news.google.com/rss/search?q=site:indianexpress.com+chennai+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-            "bias": "Center",
-        },
-        "TOI Chennai": {
-            "url": "https://news.google.com/rss/search?q=site:timesofindia.indiatimes.com+chennai+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
-            "bias": "Right",
-        },
-    },
-}
-
-# ---------------------------------------------------------------------------
-# HELPERS
-# ---------------------------------------------------------------------------
-
-def _safe_parse_json(raw: str) -> dict | list:
-    """Strip markdown fences robustly, then parse JSON."""
-    raw = raw.strip()
-    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
-    raw = re.sub(r"```\s*$",          "", raw, flags=re.MULTILINE)
-    return json.loads(raw.strip())
+raw = re.sub(r"```\s*$",          "", raw, flags=re.MULTILINE)
+    try:
+        return json.loads(raw.strip())
+    except Exception as e:
+        return {"error": f"JSON parse error: {e}"}
 
 
 def _deserialize_sources(sources) -> list:
     """Supabase JSONB columns can come back as a string in some client versions."""
     if isinstance(sources, str):
-        return json.loads(sources)
+        try:
+            return json.loads(sources)
+        except:
+            return []
     if isinstance(sources, list):
         return sources
     return []
 
 
 # ---------------------------------------------------------------------------
-# CORE AI CALL  — multi-model fallback + retry with backoff on 429
+# CORE AI CALL (TENACITY + MULTI-MODEL FALLBACK)
 # ---------------------------------------------------------------------------
 
-def _call_gemini_with_fallback(prompt: str, max_retries: int = 2) -> str:
-    """
-    Try each model in GEMINI_FALLBACKS in order.
-    On a 429 (quota exceeded): wait for the retry-delay hint, then move to
-    the next model in the list.  Raises RuntimeError if all are exhausted.
-    """
+# 1. THE RETRY ENGINE (Exponential Backoff for the active model)
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type((ResourceExhausted, TooManyRequests))
+)
+def _fetch_ai_content_with_retry(model_name: str, prompt: str) -> str:
+    """Raw function to call the API using Tenacity's exponential backoff."""
+    model = _get_gemini_model(model_name)
+    response = model.generate_content(prompt)
+    return response.text
+
+# 2. THE MULTI-MODEL FALLBACK MANAGER
+def _call_gemini_with_fallback(prompt: str) -> str:
     if not GEMINI_FALLBACKS:
         raise RuntimeError("No Gemini models configured.")
 
     last_error = None
 
     for model_name in GEMINI_FALLBACKS:
-        model = _get_gemini_model(model_name)
+        try:
+            # Attempt generation with exponential backoff on the current model
+            return _fetch_ai_content_with_retry(model_name, prompt)
 
-        for attempt in range(max_retries):
-            try:
-                resp = model.generate_content(prompt)
-                return resp.text                          # success
-
-            except Exception as e:
-                err_str    = str(e)
+        except (ResourceExhausted, TooManyRequests) as e:
+            # If it fails 3 times, move to the NEXT available model
+            st.toast(
+                f"⚠️ `{model_name}` quota exhausted after retries. Trying next...", 
+                icon="🔄"
+            )
+            last_error = e
+            continue
+        
+        except Exception as e:
+            err_str = str(e).lower()
+            
+            if "404" in err_str or "not found" in err_str:
                 last_error = e
-
-                is_quota     = "429" in err_str or "quota" in err_str.lower()
-                is_not_found = "404" in err_str or "not found" in err_str.lower()
-
-                if is_not_found:
-                    break                                 # skip to next model
-
-                if is_quota:
-                    delay_match = re.search(
-                        r"retry[_ ]in\s+([\d.]+)s", err_str, re.IGNORECASE
-                    )
-                    wait = float(delay_match.group(1)) if delay_match else (2 ** attempt) * 5
-                    wait = min(wait, 30)                  # cap at 30 s
-
-                    if attempt < max_retries - 1:
-                        st.toast(
-                            f"⏳ `{model_name}` quota hit — retrying in {wait:.0f}s…",
-                            icon="⚠️",
-                        )
-                        time.sleep(wait)
-                    else:
-                        st.toast(
-                            f"⚠️ `{model_name}` quota exhausted — trying next model…",
-                            icon="🔄",
-                        )
-                        break                             # skip to next model
-                else:
-                    raise                                 # non-quota error: bubble up
+                continue
+                
+            if "429" in err_str or "quota" in err_str:
+                st.toast(f"⚠️ `{model_name}` quota hit. Trying next...", icon="🔄")
+                last_error = e
+                continue
+                
+            raise # Unhandled generic error, bubble up
 
     raise RuntimeError(f"All Gemini models failed. Last error: {last_error}")
 
@@ -235,10 +74,7 @@ def _call_gemini_with_fallback(prompt: str, max_retries: int = 2) -> str:
 # ---------------------------------------------------------------------------
 # BATCH AI CALL
 # Sends all clusters in ONE prompt instead of N individual calls.
-# This slashes API usage by ~12× — the main fix for quota exhaustion.
-# Falls back to per-cluster calls if the batch response can't be parsed.
 # ---------------------------------------------------------------------------
-
 def generate_all_metadata(clusters: list[list[dict]]) -> list[dict]:
     if not GEMINI_FALLBACKS:
         return [{"error": "AI offline"}] * len(clusters)
@@ -256,7 +92,7 @@ def generate_all_metadata(clusters: list[list[dict]]) -> list[dict]:
       "key_fact": "One verified fact.",
       "discrepancy": "Media differences or 'Single source narrative'."
     },
-    "topics": ["Tag1"]
+    "topics": ["Tag1", "Tag2"]
   }
 ]"""
 
@@ -275,16 +111,17 @@ def generate_all_metadata(clusters: list[list[dict]]) -> list[dict]:
         if isinstance(parsed, list) and len(parsed) == len(clusters):
             return parsed
 
-        # Length mismatch — align by "group" field
+        # Alignment fallback in case lengths don't match
         result: list[dict | None] = [None] * len(clusters)
-        for item in parsed:
-            idx = item.get("group", 0) - 1
-            if 0 <= idx < len(clusters):
-                result[idx] = item
+        if isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, dict):
+                    idx = item.get("group", 0) - 1
+                    if 0 <= idx < len(clusters):
+                        result[idx] = item
         return [r if r else {"error": "missing"} for r in result]
 
     except Exception:
-        # Batch failed — fall back to per-cluster calls (higher quota usage)
         st.toast("Batch AI call failed — falling back to per-cluster mode.", icon="ℹ️")
         return [
             _single_cluster_metadata([a["title"] for a in c])
@@ -293,14 +130,14 @@ def generate_all_metadata(clusters: list[list[dict]]) -> list[dict]:
 
 
 def _single_cluster_metadata(titles: list) -> dict:
-    """Per-cluster fallback used only when the batch call fails."""
+    """Fallback per-cluster caller if batch fails."""
     json_schema = """{
     "summary": "Factual 2-sentence summary.",
     "insights": {
         "key_fact": "One verified fact.",
         "discrepancy": "Media differences or 'Single source narrative'."
     },
-    "topics": ["Tag1"]
+    "topics": ["Tag1", "Tag2"]
 }"""
     prompt = (
         f"Analyse these headlines:\n" + "\n".join(titles) + "\n\n"
@@ -311,24 +148,17 @@ def _single_cluster_metadata(titles: list) -> dict:
     try:
         raw = _call_gemini_with_fallback(prompt)
         return _safe_parse_json(raw)
-    except json.JSONDecodeError as e:
-        return {"error": f"json_decode: {e}"}
     except Exception as e:
         return {"error": str(e)}
 
 
 # ---------------------------------------------------------------------------
-# STEP 1 — fetch RSS + cluster  (cached; no AI calls inside)
+# STEP 1 — fetch RSS + cluster
 # ---------------------------------------------------------------------------
-
 @st.cache_data(ttl=3600)
 def fetch_and_cluster(region: str) -> list[list[dict]]:
-    """
-    Fetch RSS articles, embed titles with the NLP model, and group
-    semantically similar articles into clusters (cosine sim > 0.45).
-    Returns clusters sorted by size, capped at 12.
-    """
     articles = []
+    # Disguise the scraper to avoid being blocked
     feedparser.USER_AGENT = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -367,7 +197,10 @@ def fetch_and_cluster(region: str) -> list[list[dict]]:
                 if util.cos_sim(embeddings[i], embeddings[j]).item() > 0.45:
                     cluster.append(articles[j])
                     used.add(j)
-        clusters.append(cluster)
+        
+        # We allow single-source stories
+        if len(cluster) >= 1:
+            clusters.append(cluster)
 
     clusters.sort(key=len, reverse=True)
     return clusters[:12]
@@ -376,19 +209,12 @@ def fetch_and_cluster(region: str) -> list[list[dict]]:
 # ---------------------------------------------------------------------------
 # STEP 2 — enrich clusters with AI + persist to Supabase
 # ---------------------------------------------------------------------------
-
 def process_live_news(region: str) -> list[dict]:
-    """
-    Enriches raw clusters with a single batched Gemini call, then
-    persists new events to Supabase for the Weekly Radar.
-    """
     clusters = fetch_and_cluster(region)
     if not clusters:
         return []
 
-    # ONE batched AI call instead of N individual calls
     all_metadata = generate_all_metadata(clusters)
-
     processed_events: list[dict] = []
 
     for cluster, ai_data in zip(clusters, all_metadata):
@@ -416,7 +242,6 @@ def process_live_news(region: str) -> list[dict]:
 
         processed_events.append(event_record)
 
-        # Persist to Supabase for the Weekly Radar
         if supabase:
             try:
                 existing = (
@@ -432,15 +257,14 @@ def process_live_news(region: str) -> list[dict]:
                     }
                     supabase.table("news_events").insert(record_for_db).execute()
             except Exception as db_err:
-                st.warning(f"Supabase write failed: {db_err}")
+                pass
 
     return processed_events
 
 
 # ---------------------------------------------------------------------------
-# WEEKLY RADAR  (reads from Supabase)
+# WEEKLY RADAR
 # ---------------------------------------------------------------------------
-
 @st.cache_data(ttl=600)
 def fetch_weekly_radar(region: str) -> list[dict]:
     if not supabase:
@@ -465,7 +289,6 @@ def fetch_weekly_radar(region: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 # CARD RENDERER
 # ---------------------------------------------------------------------------
-
 def render_event_card(event: dict) -> None:
     sources = _deserialize_sources(event.get("sources_json", []))
     total   = max(event.get("total_articles", len(sources)), 1)
@@ -492,22 +315,23 @@ def render_event_card(event: dict) -> None:
             f"{art.get('title','')}</a></small></div>"
         )
 
+    # Note: These f-strings are pushed all the way to the left so Streamlit Markdown doesn't block them.
     if total > 1:
         left_pct   = (event.get("left_count",   0) / total) * 100
         center_pct = (event.get("center_count", 0) / total) * 100
         right_pct  = (event.get("right_count",  0) / total) * 100
         bias_ui = f"""
-        <div class="bias-bar-container">
-            <div style="width:{left_pct:.1f}%;background-color:#3b82f6;"></div>
-            <div style="width:{center_pct:.1f}%;background-color:#eab308;"></div>
-            <div style="width:{right_pct:.1f}%;background-color:#ef4444;"></div>
-        </div>
-        <div style="display:flex;justify-content:space-between;font-size:11px;
-                    color:#9ca3af;margin-bottom:12px;">
-            <span>▪ Left ({event.get('left_count',0)})</span>
-            <span>▪ Center ({event.get('center_count',0)})</span>
-            <span>▪ Right ({event.get('right_count',0)})</span>
-        </div>"""
+<div class="bias-bar-container">
+<div style="width:{left_pct:.1f}%;background-color:#3b82f6;"></div>
+<div style="width:{center_pct:.1f}%;background-color:#eab308;"></div>
+<div style="width:{right_pct:.1f}%;background-color:#ef4444;"></div>
+</div>
+<div style="display:flex;justify-content:space-between;font-size:11px;color:#9ca3af;margin-bottom:12px;">
+<span>▪ Left ({event.get('left_count',0)})</span>
+<span>▪ Center ({event.get('center_count',0)})</span>
+<span>▪ Right ({event.get('right_count',0)})</span>
+</div>
+"""
     else:
         bias       = sources[0].get("bias", "Unknown") if sources else "Unknown"
         bias_color = (
@@ -515,51 +339,37 @@ def render_event_card(event: dict) -> None:
             else "#eab308" if bias == "Center"
             else "#ef4444"
         )
-        bias_ui = (
-            f"<p style='font-size:13px;color:{bias_color};font-weight:bold;"
-            f"margin:16px 0;'>▪ Single Source Narrative ({bias} Leaning)</p>"
-        )
+        bias_ui = f"""
+<p style='font-size:13px;color:{bias_color};font-weight:bold;margin:16px 0;'>▪ Single Source Narrative ({bias} Leaning)</p>
+"""
 
     st.markdown(f"""
 <style>
-.custom-card {{
-    background:white; padding:20px; border-radius:8px;
-    border:1px solid #e5e7eb; box-shadow:0 1px 3px rgba(0,0,0,0.05);
-    margin-bottom:20px;
-}}
-.insight-tag {{
-    color:#4b5563; font-size:11px; font-weight:bold;
-    text-transform:uppercase; letter-spacing:0.5px; margin-top:12px;
-}}
-.bias-bar-container {{
-    display:flex; height:6px; width:100%;
-    border-radius:3px; overflow:hidden; margin-top:16px; margin-bottom:4px;
-}}
-.sources-box {{
-    background:#f9fafb; padding:12px; border-radius:6px;
-    margin-top:16px; border:1px solid #f3f4f6;
-}}
+.custom-card {{ background:white; padding:20px; border-radius:8px; border:1px solid #e5e7eb; box-shadow:0 1px 3px rgba(0,0,0,0.05); margin-bottom:20px; }}
+.insight-tag {{ color:#4b5563; font-size:11px; font-weight:bold; text-transform:uppercase; letter-spacing:0.5px; margin-top:12px; }}
+.bias-bar-container {{ display:flex; height:6px; width:100%; border-radius:3px; overflow:hidden; margin-top:16px; margin-bottom:4px; }}
+.sources-box {{ background:#f9fafb; padding:12px; border-radius:6px; margin-top:16px; border:1px solid #f3f4f6; }}
 </style>
 
 <div class="custom-card">
-    {topics_html}
-    <h3 style="margin-top:12px;color:#111827;">{event.get("title","")}</h3>
-    <p style="color:#374151;font-size:15px;line-height:1.5;">{event.get("summary","")}</p>
+{topics_html}
+<h3 style="margin-top:12px;color:#111827;">{event.get("title","")}</h3>
+<p style="color:#374151;font-size:15px;line-height:1.5;">{event.get("summary","")}</p>
 
-    <div class="insight-tag">Key Fact</div>
-    <p style="margin:4px 0 0 0;font-size:14px;color:#4b5563;">{event.get("key_fact","N/A")}</p>
+<div class="insight-tag">Key Fact</div>
+<p style="margin:4px 0 0 0;font-size:14px;color:#4b5563;">{event.get("key_fact","N/A")}</p>
 
-    <div class="insight-tag">Media Discrepancy</div>
-    <p style="margin:4px 0 0 0;font-size:14px;color:#4b5563;">{event.get("discrepancy","N/A")}</p>
+<div class="insight-tag">Media Discrepancy</div>
+<p style="margin:4px 0 0 0;font-size:14px;color:#4b5563;">{event.get("discrepancy","N/A")}</p>
 
-    {bias_ui}
+{bias_ui}
 
-    <details>
-        <summary style="cursor:pointer;color:#6b7280;font-size:14px;font-weight:500;">
-            View {total} Source(s)
-        </summary>
-        <div class="sources-box">{sources_html}</div>
-    </details>
+<details>
+<summary style="cursor:pointer;color:#6b7280;font-size:14px;font-weight:500;">
+View {total} Source(s)
+</summary>
+<div class="sources-box">{sources_html}</div>
+</details>
 </div>
 """, unsafe_allow_html=True)
 
@@ -567,7 +377,6 @@ def render_event_card(event: dict) -> None:
 # ---------------------------------------------------------------------------
 # VIEW BUILDER
 # ---------------------------------------------------------------------------
-
 def build_view(region: str) -> None:
     view_mode = st.radio(
         "Timeframe",
@@ -616,7 +425,6 @@ def build_view(region: str) -> None:
 # ---------------------------------------------------------------------------
 # APP LAYOUT
 # ---------------------------------------------------------------------------
-
 st.title("News Aggregator")
 st.markdown("▪ Bias tracking · AI event clustering · Multi-region coverage")
 
